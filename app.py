@@ -1,12 +1,12 @@
 """
-Fitness Classification System
+Fitness Classification System — Streamlit App
 Uses Random Forest ML to predict fitness category and provide recommendations.
 """
 
+import streamlit as st
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
 from sklearn.preprocessing import LabelEncoder
 
 # ──────────────────────────────────────────────
@@ -17,6 +17,7 @@ LABELS = {
     0: {
         "category": "Underfit",
         "emoji": "💪",
+        "color": "#2196F3",
         "recommendation": (
             "Increase daily calorie intake with protein-rich foods "
             "(eggs, chicken, legumes). Focus on strength training 3–4x/week "
@@ -26,6 +27,7 @@ LABELS = {
     1: {
         "category": "Fit",
         "emoji": "✅",
+        "color": "#4CAF50",
         "recommendation": (
             "Maintain your balanced diet and consistent exercise routine. "
             "Mix cardio and strength training. Stay hydrated and monitor "
@@ -35,6 +37,7 @@ LABELS = {
     2: {
         "category": "Overfit",
         "emoji": "🔥",
+        "color": "#FF5722",
         "recommendation": (
             "Create a moderate calorie deficit (~300–500 kcal/day). "
             "Prioritize cardio (30 min/day) and HIIT 2–3x/week. "
@@ -50,203 +53,140 @@ BMI_CATEGORIES = [
     (29.9, float("inf"), "Obese"),
 ]
 
-ACTIVITY_LABELS = {1: "Sedentary", 2: "Moderately Active", 3: "Very Active"}
-
-
 # ──────────────────────────────────────────────
 # Utilities
 # ──────────────────────────────────────────────
 
 def calculate_bmi(height_m: float, weight_kg: float) -> float:
-    """Return BMI rounded to 2 decimal places."""
     if height_m <= 0:
         raise ValueError("Height must be greater than 0.")
     return round(weight_kg / (height_m ** 2), 2)
 
 
 def bmi_category(bmi: float) -> str:
-    """Return a human-readable BMI category string."""
     for low, high, label in BMI_CATEGORIES:
         if low <= bmi < high:
             return label
     return "Unknown"
 
 
-def get_int_input(prompt: str, valid_range: range | list | None = None) -> int:
-    """Prompt the user for an integer, validating against an optional range."""
-    while True:
-        try:
-            value = int(input(prompt).strip())
-            if valid_range is not None and value not in valid_range:
-                print(f"  ⚠  Please enter one of: {list(valid_range)}")
-                continue
-            return value
-        except ValueError:
-            print("  ⚠  Invalid input — please enter a whole number.")
-
-
-def get_float_input(prompt: str, min_val: float = 0.0, max_val: float = 1e9) -> float:
-    """Prompt the user for a float within an optional [min, max] range."""
-    while True:
-        try:
-            value = float(input(prompt).strip())
-            if not (min_val < value <= max_val):
-                print(f"  ⚠  Please enter a value between {min_val} and {max_val}.")
-                continue
-            return value
-        except ValueError:
-            print("  ⚠  Invalid input — please enter a number.")
-
-
 # ──────────────────────────────────────────────
-# Data Loading & Preprocessing
+# Model (cached so it only trains once)
 # ──────────────────────────────────────────────
 
-def load_and_prepare_data(filepath: str) -> tuple[pd.DataFrame, pd.Series]:
-    """
-    Load CSV, drop nulls, encode categoricals, and engineer the BMI feature.
-    Returns (X, y).
-    """
-    data = pd.read_csv(filepath)
-
-    # Drop rows with missing values
-    initial_rows = len(data)
+@st.cache_resource
+def load_model():
+    data = pd.read_csv("fitness_data.csv")
     data.dropna(inplace=True)
-    dropped = initial_rows - len(data)
-    if dropped:
-        print(f"  ℹ  Dropped {dropped} rows with missing values.")
 
-    # Encode Gender if it's a string (e.g., 'Male'/'Female')
     if data["Gender"].dtype == object:
         le = LabelEncoder()
         data["Gender"] = le.fit_transform(data["Gender"])
 
-    # Engineer BMI as an additional feature
-    data["BMI"] = data.apply(
-        lambda row: calculate_bmi(row["Height_m"], row["Weight_kg"]), axis=1
-    )
+    data["BMI"] = data["Weight_kg"] / (data["Height_m"] ** 2)
 
     feature_cols = ["Age", "Gender", "Height_m", "Weight_kg", "Activity_Level", "BMI"]
     X = data[feature_cols]
     y = data["Label"]
 
-    return X, y
-
-
-# ──────────────────────────────────────────────
-# Model Training
-# ──────────────────────────────────────────────
-
-def train_model(X: pd.DataFrame, y: pd.Series, random_state: int = 42) -> RandomForestClassifier:
-    """
-    Split data, train a Random Forest, and print evaluation metrics.
-    Returns the trained model.
-    """
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=random_state, stratify=y
+        X, y, test_size=0.2, random_state=42, stratify=y
     )
-
-    model = RandomForestClassifier(n_estimators=100, random_state=random_state)
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
 
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-
-    print(f"\n{'─'*45}")
-    print(f"  Model Accuracy : {accuracy:.2%}")
-    print(f"{'─'*45}")
-    print(classification_report(y_test, y_pred, target_names=["Underfit", "Fit", "Overfit"]))
-
-    return model
+    accuracy = model.score(X_test, y_test)
+    return model, accuracy
 
 
 # ──────────────────────────────────────────────
-# Prediction
+# Streamlit UI
 # ──────────────────────────────────────────────
 
-def collect_user_input() -> dict:
-    """Interactively collect user measurements and return them as a dict."""
-    print("\n" + "═" * 45)
-    print("   🏋️  FITNESS ASSESSMENT — Enter Your Details")
-    print("═" * 45)
+st.set_page_config(page_title="Fitness Classifier", page_icon="🏋️", layout="centered")
 
-    age      = get_int_input("  Age              : ", range(1, 121))
-    gender   = get_int_input("  Gender (0=F, 1=M): ", [0, 1])
-    height   = get_float_input("  Height (m)       : ", 0.5, 2.5)
-    weight   = get_float_input("  Weight (kg)      : ", 10.0, 500.0)
-    activity = get_int_input(
-        "  Activity Level\n  (1=Sedentary, 2=Moderate, 3=Active): ",
-        [1, 2, 3]
+st.title("🏋️ Fitness Classification System")
+st.caption("Enter your details below to get a personalised fitness assessment.")
+
+# Load model
+with st.spinner("Training model on fitness data…"):
+    try:
+        model, accuracy = load_model()
+        st.success(f"Model ready — accuracy: **{accuracy:.1%}**")
+    except FileNotFoundError:
+        st.error("❌ `fitness_data.csv` not found. Make sure it's in the repo root.")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Error loading model: {e}")
+        st.stop()
+
+st.divider()
+
+# ── Input form ──
+st.subheader("Your Details")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    age = st.number_input("Age", min_value=1, max_value=120, value=25, step=1)
+    height = st.number_input("Height (m)", min_value=0.5, max_value=2.5, value=1.70, step=0.01, format="%.2f")
+    activity = st.selectbox(
+        "Activity Level",
+        options=[1, 2, 3],
+        format_func=lambda x: {1: "1 — Sedentary", 2: "2 — Moderately Active", 3: "3 — Very Active"}[x],
     )
 
-    return {
-        "age": age,
-        "gender": gender,
-        "height": height,
-        "weight": weight,
-        "activity": activity,
-    }
+with col2:
+    gender = st.radio("Gender", options=[0, 1], format_func=lambda x: "Female" if x == 0 else "Male", horizontal=True)
+    weight = st.number_input("Weight (kg)", min_value=10.0, max_value=500.0, value=70.0, step=0.5, format="%.1f")
 
+st.divider()
 
-def predict_and_display(model: RandomForestClassifier, user: dict) -> None:
-    """Run prediction and print a formatted results report."""
-    bmi = calculate_bmi(user["height"], user["weight"])
+# ── Predict button ──
+if st.button("Get My Fitness Report", type="primary", use_container_width=True):
+    bmi = calculate_bmi(height, weight)
     bmi_cat = bmi_category(bmi)
-    activity_label = ACTIVITY_LABELS.get(user["activity"], "Unknown")
 
-    features = [[
-        user["age"], user["gender"], user["height"],
-        user["weight"], user["activity"], bmi
-    ]]
-
+    features = [[age, gender, height, weight, activity, bmi]]
     prediction = model.predict(features)[0]
     probabilities = model.predict_proba(features)[0]
     confidence = max(probabilities) * 100
 
     info = LABELS[prediction]
 
-    print("\n" + "═" * 45)
-    print("   📊  YOUR FITNESS REPORT")
-    print("═" * 45)
-    print(f"  BMI              : {bmi:.2f}  ({bmi_cat})")
-    print(f"  Activity Level   : {activity_label}")
-    print(f"  Fitness Category : {info['emoji']}  {info['category']}")
-    print(f"  Model Confidence : {confidence:.1f}%")
-    print(f"\n  📋 Recommendation:")
-    # Word-wrap recommendation at ~50 chars
-    words = info["recommendation"].split()
-    line, lines = "", []
-    for word in words:
-        if len(line) + len(word) + 1 > 50:
-            lines.append(line)
-            line = word
-        else:
-            line = f"{line} {word}".strip()
-    if line:
-        lines.append(line)
-    for l in lines:
-        print(f"     {l}")
-    print("═" * 45 + "\n")
+    st.divider()
+    st.subheader("📊 Your Fitness Report")
 
+    # Metrics row
+    m1, m2, m3 = st.columns(3)
+    m1.metric("BMI", f"{bmi:.1f}", bmi_cat)
+    m2.metric("Fitness Category", f"{info['emoji']} {info['category']}")
+    m3.metric("Model Confidence", f"{confidence:.1f}%")
 
-# ──────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────
+    # Result card
+    st.markdown(
+        f"""
+        <div style="
+            background-color: {info['color']}18;
+            border-left: 5px solid {info['color']};
+            border-radius: 8px;
+            padding: 20px 24px;
+            margin-top: 16px;
+        ">
+            <h3 style="color: {info['color']}; margin: 0 0 10px 0;">
+                {info['emoji']} {info['category']}
+            </h3>
+            <p style="margin: 0; font-size: 16px; line-height: 1.6;">
+                {info['recommendation']}
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-def main():
-    print("\n🔄  Loading data and training model…")
-    X, y = load_and_prepare_data("fitness_data.csv")
-    model = train_model(X, y)
-
-    while True:
-        user = collect_user_input()
-        predict_and_display(model, user)
-
-        again = input("  Run another assessment? (y/n): ").strip().lower()
-        if again != "y":
-            print("\n  Goodbye — stay fit! 👋\n")
-            break
-
-
-if __name__ == "__main__":
-    main()
+    # Confidence breakdown
+    with st.expander("See confidence breakdown"):
+        for idx, label_info in LABELS.items():
+            prob = probabilities[idx] * 100
+            st.write(f"{label_info['emoji']} **{label_info['category']}**")
+            st.progress(int(prob), text=f"{prob:.1f}%")
